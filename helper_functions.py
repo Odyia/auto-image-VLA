@@ -229,16 +229,18 @@ def scrape_listfile(listfile, source_name, split, use_single_band, single_band):
         df_all = df_band
     
         # lower
-        freq_ghz = round(df_lower["CtrFreq(MHz)"].values.astype(float).mean()/1000, 2)
-        spws = df_lower["SpwID"].values.astype(int)
-        spw_range = f"{min(spws)}~{max(spws)}"
-        rows_list.append({"band":band, "split":"lower", "freq [GHz]":freq_ghz, "spws":spw_range, "cell size [arcsec/pixel]":cell_size})
+        if not df_lower.empty:
+            freq_ghz = round(df_lower["CtrFreq(MHz)"].values.astype(float).mean()/1000, 2)
+            spws = df_lower["SpwID"].values.astype(int)
+            spw_range = f"{min(spws)}~{max(spws)}"
+            rows_list.append({"band":band, "split":"lower", "freq [GHz]":freq_ghz, "spws":spw_range, "cell size [arcsec/pixel]":cell_size})
     
         # upper
-        freq_ghz = round(df_upper["CtrFreq(MHz)"].values.astype(float).mean()/1000, 2)
-        spws = df_upper["SpwID"].values.astype(int)
-        spw_range = f"{min(spws)}~{max(spws)}"
-        rows_list.append({"band":band, "split":"upper", "freq [GHz]":freq_ghz, "spws":spw_range, "cell size [arcsec/pixel]":cell_size})
+        if not df_upper.empty:
+            freq_ghz = round(df_upper["CtrFreq(MHz)"].values.astype(float).mean()/1000, 2)
+            spws = df_upper["SpwID"].values.astype(int)
+            spw_range = f"{min(spws)}~{max(spws)}"
+            rows_list.append({"band":band, "split":"upper", "freq [GHz]":freq_ghz, "spws":spw_range, "cell size [arcsec/pixel]":cell_size})
 
         # all
         freq_ghz = round(df_all["CtrFreq(MHz)"].values.astype(float).mean()/1000, 2)
@@ -247,6 +249,8 @@ def scrape_listfile(listfile, source_name, split, use_single_band, single_band):
         rows_list.append({"band":band, "split":"all", "freq [GHz]":freq_ghz, "spws":spw_range, "cell size [arcsec/pixel]":cell_size})
 
     df_store = pd.DataFrame(rows_list)#columns=["band", "split", "freq [GHz]", "spws", "cell size [arcsec/pixel]"])
+    if df_store.empty:
+        raise ValueError("No imageable spectral windows were found in the Measurement Set listobs metadata.")
     df_store = df_store.sort_values(by=["freq [GHz]"])
     df_store = df_store.reset_index(drop=True)
 
@@ -257,6 +261,27 @@ def scrape_listfile(listfile, source_name, split, use_single_band, single_band):
         df_store = df_store[df_store["split"].isin(["upper", "lower"])].reset_index(drop=True)
 
     return df_store, field
+
+
+def filter_image_options(df_store, selected_images):
+    if not selected_images:
+        return df_store
+
+    selected_keys = {
+        (option["band"], option["split"], round(float(option["frequency_ghz"]), 2))
+        for option in selected_images
+    }
+    mask = [
+        (row["band"], row["split"], round(float(row["freq [GHz]"]), 2)) in selected_keys
+        for _, row in df_store.iterrows()
+    ]
+    filtered = df_store.loc[mask].reset_index(drop=True)
+    if filtered.empty:
+        raise ValueError(
+            "None of the selected bands/frequency groups are present in the Measurement Set listobs metadata."
+        )
+    return filtered
+
 
 def fit_point_source_basic(image_path, print_results=True, write_results=True):
 

@@ -5,7 +5,7 @@ Scripts to (allegedly) make life easier when imaging calibrated measurement sets
 To obtain a local copy of this code + its supporting materials, clone the repository in Terminal via
 
 
-    git clone https://github.com/jlynch2195/auto-image-VLA.git
+    git clone https://github.com/Odyia/auto-image-VLA.git
 
 You only have to do this once. To update your local copy to match the newest version on GitHub, make sure you're in the repository in your filesystem, then run
 

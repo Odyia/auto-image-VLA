@@ -10,6 +10,7 @@ single_band: "EVLA_X"
 
 # splits are "whole" for one image per band with all spws, "halves" for two images split down spws, or "both" 
 split: "both"
+selected_images: null
 
 # point source inputs ----------------------------------------------------------------------------------------
 try_point_source: True

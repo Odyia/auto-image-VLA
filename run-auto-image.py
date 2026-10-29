@@ -25,6 +25,7 @@ try_point_source = config["try_point_source"]
 split = config["split"]
 use_single_band = config["use_single_band"]
 single_band = config["single_band"]
+selected_images = config.get("selected_images")
 fitting_procedure = config["fitting_procedure"]
 
 # optional imfit params
@@ -44,6 +45,7 @@ listfile = f"{root_dir}/listfile.txt"
 listobs(vis=measurement_set, listfile=listfile, overwrite=True)
 print(f"Created listfile \n")
 df_store, field = scrape_listfile(listfile, source_name, split, use_single_band, single_band)
+df_store = filter_image_options(df_store, selected_images)
 
 # set up filesystem for image and flux report generation
 set_up_filesystem(df_store, root_dir, try_point_source)
@@ -63,5 +65,4 @@ if try_point_source:
     
     
     
-
 
