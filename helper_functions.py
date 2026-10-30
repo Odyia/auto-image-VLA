@@ -5,6 +5,7 @@ import sys
 import shutil
 import argparse
 import os
+import re
 import warnings
 import time
 from astropy.time import Time
@@ -110,10 +111,82 @@ def tclean_helper(df_store, measurement_set, ms_name, image_size, field, root_di
 # Returns:
 #     field (str): index of source in listfile
 #     cell_size (float): resolution [arcsec/pixel] of image, calculated by dividing the synthesized beamwidth by a factor of 4, as is recommended by NRAO
-#     spw_range (str): spectral window range to image, given in format 'start_spw~stop_spw'
+#     spw_range (str): comma-separated spectral-window IDs to image
 #     central_freq (float): central frequency of VLA band given
 #     ra (str) and dec (str): coordinates of source
-def scrape_listfile(listfile, source_name, split, use_single_band, single_band):
+def target_spw_ids_for_field(measurement_set, field_id):
+    from casatools import table
+
+    tb = table()
+    try:
+        tb.open(f"{measurement_set}/DATA_DESCRIPTION")
+        data_description_spws = tb.getcol("SPECTRAL_WINDOW_ID").tolist()
+        tb.close()
+
+        state_modes = []
+        try:
+            tb.open(f"{measurement_set}/STATE")
+            state_modes = [str(mode) for mode in tb.getcol("OBS_MODE")]
+        except Exception as exc:
+            print(
+                "Warning: could not read STATE intent metadata; using SPWs associated with "
+                f"target field {field_id} only ({exc})."
+            )
+        finally:
+            try:
+                tb.close()
+            except Exception:
+                pass
+
+        target_state_ids = [
+            state_id
+            for state_id, mode in enumerate(state_modes)
+            if "OBSERVE_TARGET" in mode.upper()
+            or mode.upper() == "TARGET"
+            or mode.upper().startswith("TARGET#")
+        ]
+        tb.open(measurement_set)
+        main_table = tb
+        if target_state_ids:
+            data_description_ids = set()
+            for state_id in target_state_ids:
+                selected_rows = main_table.query(
+                    f"FIELD_ID == {int(field_id)} && STATE_ID == {state_id}"
+                )
+                try:
+                    data_description_ids.update(
+                        int(value) for value in selected_rows.getcol("DATA_DESC_ID").tolist()
+                    )
+                finally:
+                    selected_rows.close()
+        else:
+            selected_rows = main_table.query(f"FIELD_ID == {int(field_id)}")
+            try:
+                data_description_ids = {
+                    int(value) for value in selected_rows.getcol("DATA_DESC_ID").tolist()
+                }
+            finally:
+                selected_rows.close()
+
+        spw_ids = {
+            int(data_description_spws[data_description_id])
+            for data_description_id in data_description_ids
+            if 0 <= data_description_id < len(data_description_spws)
+        }
+        if not spw_ids:
+            raise RuntimeError(
+                f"No Measurement Set spectral windows are associated with target field {field_id} "
+                "in target-intent scans."
+            )
+        return spw_ids
+    finally:
+        try:
+            tb.close()
+        except Exception:
+            pass
+
+
+def scrape_listfile(listfile, source_name, split, use_single_band, single_band, measurement_set):
 
     # open listfile
     with open(listfile) as f:
@@ -125,6 +198,7 @@ def scrape_listfile(listfile, source_name, split, use_single_band, single_band):
     df_schedule = pd.read_csv("vla-configuration-schedule.csv")
     
     # loop through lines to find important lines
+    field_line = spw_line = time_line = None
     for i, line in enumerate(lines):
         if "Fields" in line:
             field_line = line
@@ -138,15 +212,26 @@ def scrape_listfile(listfile, source_name, split, use_single_band, single_band):
         if "Observed from" in line:
             time_line = line
             time_indx = i
+
+    if field_line is None or spw_line is None or time_line is None:
+        raise ValueError(f"Listobs output is missing required Fields, Spectral Windows, or Observed from sections: {listfile}")
     
     # FIELD ===============================================
-    nfields = int(field_line.split(" ")[-1][0])
+    field_count = re.search(r"Fields:\s*(\d+)", field_line)
+    if field_count is None:
+        raise ValueError(f"Could not parse field count from listobs output: {field_line}")
+    nfields = int(field_count.group(1))
     ls = [lines[field_indx+1+i] for i in range(nfields+1)]
+    field = None
     for l in ls:
-        if source_name in l:
-            field = l.split()[0]
-            ra = l.split()[3]
-            dec = l.split()[4]
+        columns = l.split()
+        if len(columns) >= 5 and columns[2].casefold() == str(source_name).casefold():
+            field = columns[0]
+            ra = columns[3]
+            dec = columns[4]
+            break
+    if field is None:
+        raise ValueError(f"Could not find source {source_name!r} in the listobs FIELD table.")
     
     # CONFIGURATION =======================================
     # find start and finish time for observations
@@ -173,14 +258,13 @@ def scrape_listfile(listfile, source_name, split, use_single_band, single_band):
     
     # SPECTRAL WINDOWS =================================================
     # determine how many spectral windows there are
-    nspws = int(spw_line.split(' ')[3].split('(')[-1])
+    spw_count = re.search(r"Spectral Windows:\s*(\d+)", spw_line)
+    if spw_count is None:
+        raise ValueError(f"Could not parse spectral-window count from listobs output: {spw_line}")
+    nspws = int(spw_count.group(1))
     ls = [lines[spw_indx+1+i] for i in range(nspws+1)]
     col_names = list(filter(None, ls[0].split(' ')))
 
-    # remove first two spectral windows that are setup scans
-    if not use_single_band:
-        ls = ls[2:]
-    
     # get formatting right
     result = []
     for line in ls:
@@ -192,14 +276,20 @@ def scrape_listfile(listfile, source_name, split, use_single_band, single_band):
     cols = cols[0:8]+["BBC-Num", "Corr1", "Corr2", "Corr3", "Corr4"]
     data = result[1:]
     df = pd.DataFrame(data, columns=cols)
-    
-    # prints just to make sure setup scans are correctly removed
-    print(df)
+
+    target_spw_ids = target_spw_ids_for_field(measurement_set, field)
+    df = df[df["SpwID"].astype(int).isin(target_spw_ids)].copy()
+    if df.empty:
+        raise ValueError(
+            f"No target-associated spectral windows for source {source_name!r} were present in listobs."
+        )
+    print(f"Using target-field SPWs for {source_name}: {sorted(target_spw_ids)}")
 
     # get list of bands in listfile
-    bands = list(set([df["Name"].iloc[i].split("#")[0] for i in range(df.shape[0])]))
+    supported_bands = set(df_resolution["band"].astype(str))
+    bands = sorted(set(df["Name"].str.split("#").str[0]) & supported_bands)
     if use_single_band:
-        bands = [single_band]
+        bands = [single_band] if single_band in bands else []
     
     rows_list = []
     for i, band in enumerate(bands):
@@ -214,13 +304,10 @@ def scrape_listfile(listfile, source_name, split, use_single_band, single_band):
         # get section of df for the band
         in_band = [band+"#" in b for b in list(df["Name"].values)]
         indxs = np.where(in_band)[0]
-        df_band = df.iloc[indxs]
-    
-        # remove two cal spws from X-band
-        # second if statement fails when the setup scans are the only EVLA_X scans in ms so added the first if statement (not tested yet)
-        #if not use_single_band:
-        #    if band == "EVLA_X":
-        #        df_band = df_band.iloc[2:]
+        df_band = df.iloc[indxs].copy()
+        df_band["CtrFreq(MHz)"] = df_band["CtrFreq(MHz)"].astype(float)
+        df_band["SpwID"] = df_band["SpwID"].astype(int)
+        df_band = df_band.sort_values(by=["CtrFreq(MHz)", "SpwID"])
     
         # split into frequency bands
         nspws = df_band.shape[0]
@@ -231,22 +318,22 @@ def scrape_listfile(listfile, source_name, split, use_single_band, single_band):
         # lower
         if not df_lower.empty:
             freq_ghz = round(df_lower["CtrFreq(MHz)"].values.astype(float).mean()/1000, 2)
-            spws = df_lower["SpwID"].values.astype(int)
-            spw_range = f"{min(spws)}~{max(spws)}"
-            rows_list.append({"band":band, "split":"lower", "freq [GHz]":freq_ghz, "spws":spw_range, "cell size [arcsec/pixel]":cell_size})
+            spws = sorted(df_lower["SpwID"].values.astype(int))
+            spw_selection = ",".join(str(spw) for spw in spws)
+            rows_list.append({"band":band, "split":"lower", "freq [GHz]":freq_ghz, "spws":spw_selection, "cell size [arcsec/pixel]":cell_size})
     
         # upper
         if not df_upper.empty:
             freq_ghz = round(df_upper["CtrFreq(MHz)"].values.astype(float).mean()/1000, 2)
-            spws = df_upper["SpwID"].values.astype(int)
-            spw_range = f"{min(spws)}~{max(spws)}"
-            rows_list.append({"band":band, "split":"upper", "freq [GHz]":freq_ghz, "spws":spw_range, "cell size [arcsec/pixel]":cell_size})
+            spws = sorted(df_upper["SpwID"].values.astype(int))
+            spw_selection = ",".join(str(spw) for spw in spws)
+            rows_list.append({"band":band, "split":"upper", "freq [GHz]":freq_ghz, "spws":spw_selection, "cell size [arcsec/pixel]":cell_size})
 
         # all
         freq_ghz = round(df_all["CtrFreq(MHz)"].values.astype(float).mean()/1000, 2)
-        spws = df_all["SpwID"].values.astype(int)
-        spw_range = f"{min(spws)}~{max(spws)}"
-        rows_list.append({"band":band, "split":"all", "freq [GHz]":freq_ghz, "spws":spw_range, "cell size [arcsec/pixel]":cell_size})
+        spws = sorted(df_all["SpwID"].values.astype(int))
+        spw_selection = ",".join(str(spw) for spw in spws)
+        rows_list.append({"band":band, "split":"all", "freq [GHz]":freq_ghz, "spws":spw_selection, "cell size [arcsec/pixel]":cell_size})
 
     df_store = pd.DataFrame(rows_list)#columns=["band", "split", "freq [GHz]", "spws", "cell size [arcsec/pixel]"])
     if df_store.empty:

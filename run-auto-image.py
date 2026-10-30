@@ -44,7 +44,14 @@ ms_prefix = os.path.splitext(measurement_set)[0]              # should be progra
 listfile = f"{root_dir}/listfile.txt"
 listobs(vis=measurement_set, listfile=listfile, overwrite=True)
 print(f"Created listfile \n")
-df_store, field = scrape_listfile(listfile, source_name, split, use_single_band, single_band)
+df_store, field = scrape_listfile(
+    listfile,
+    source_name,
+    split,
+    use_single_band,
+    single_band,
+    measurement_set,
+)
 df_store = filter_image_options(df_store, selected_images)
 
 # set up filesystem for image and flux report generation
@@ -65,4 +72,3 @@ if try_point_source:
     
     
     
-
