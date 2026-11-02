@@ -178,6 +178,14 @@ def target_spw_ids_for_field(measurement_set, field_id):
                 f"No Measurement Set spectral windows are associated with target field {field_id} "
                 "in target-intent scans."
             )
+        if target_state_ids:
+            selection_basis = "target-intent scans"
+        else:
+            selection_basis = "all scans for this FIELD because target intent metadata is unavailable"
+        print(
+            f"Auto-image SPW selection: FIELD {field_id}; basis={selection_basis}; "
+            f"SPW IDs selected={sorted(spw_ids)}."
+        )
         return spw_ids
     finally:
         try:
@@ -223,15 +231,26 @@ def scrape_listfile(listfile, source_name, split, use_single_band, single_band, 
     nfields = int(field_count.group(1))
     ls = [lines[field_indx+1+i] for i in range(nfields+1)]
     field = None
+    matched_field_name = None
+    normalized_source_name = re.sub(r"[^a-z0-9]", "", str(source_name).casefold())
     for l in ls:
         columns = l.split()
-        if len(columns) >= 5 and columns[2].casefold() == str(source_name).casefold():
+        if (
+            normalized_source_name
+            and len(columns) >= 5
+            and re.sub(r"[^a-z0-9]", "", columns[2].casefold()) == normalized_source_name
+        ):
             field = columns[0]
+            matched_field_name = columns[2]
             ra = columns[3]
             dec = columns[4]
             break
     if field is None:
         raise ValueError(f"Could not find source {source_name!r} in the listobs FIELD table.")
+    print(
+        f"Auto-image target cross-check: configured object={source_name!r} matched "
+        f"listobs FIELD {field} ({matched_field_name!r})."
+    )
     
     # CONFIGURATION =======================================
     # find start and finish time for observations
@@ -283,8 +302,6 @@ def scrape_listfile(listfile, source_name, split, use_single_band, single_band, 
         raise ValueError(
             f"No target-associated spectral windows for source {source_name!r} were present in listobs."
         )
-    print(f"Using target-field SPWs for {source_name}: {sorted(target_spw_ids)}")
-
     # get list of bands in listfile
     supported_bands = set(df_resolution["band"].astype(str))
     bands = sorted(set(df["Name"].str.split("#").str[0]) & supported_bands)
