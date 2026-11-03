@@ -277,10 +277,14 @@ def scrape_listfile(listfile, source_name, split, use_single_band, single_band, 
     
     # SPECTRAL WINDOWS =================================================
     # determine how many spectral windows there are
-    spw_count = re.search(r"Spectral Windows:\s*(\d+)", spw_line)
+    spw_count = re.search(
+        r"Spectral Windows:\s*(?:\((\d+)\s+unique\s+spectral\s+windows\b|(\d+))",
+        spw_line,
+        re.IGNORECASE,
+    )
     if spw_count is None:
         raise ValueError(f"Could not parse spectral-window count from listobs output: {spw_line}")
-    nspws = int(spw_count.group(1))
+    nspws = int(next(count for count in spw_count.groups() if count is not None))
     ls = [lines[spw_indx+1+i] for i in range(nspws+1)]
     col_names = list(filter(None, ls[0].split(' ')))
 
