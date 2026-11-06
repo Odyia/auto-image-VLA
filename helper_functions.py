@@ -264,6 +264,7 @@ def scrape_listfile(listfile, source_name, split, use_single_band, single_band, 
     
     df_date_format = "%Y %b %d"
     # find the row in the schedule dataframe that encapsulates the observation
+    configuration = "A"
     for i, row in df_schedule.iterrows():
         start_epoch = datetime.strptime(row["observing_start"], df_date_format)
         end_epoch = datetime.strptime(row["observing_end"], df_date_format)
