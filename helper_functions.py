@@ -21,7 +21,12 @@ def set_up_filesystem(df_store, root_dir, try_point_source):
     for i, row in df_store.iterrows():
         band = row["band"]
         freq = row["freq [GHz]"]
-        subdir_name = f"{band}/{freq}GHz"
+        image_label = row.get("image_label")
+        if pd.notna(image_label):
+            freq = f"{freq}GHz_{image_label}"
+        else:
+            freq = f"{freq}GHz"
+        subdir_name = f"{band}/{freq}"
         
         full_path = os.path.join(root_dir, subdir_name)
         os.makedirs(full_path, exist_ok=True)
@@ -41,7 +46,11 @@ def tclean_helper(df_store, measurement_set, ms_name, image_size, field, root_di
 
         # parse parameters for imaging from row
         spws = row["spws"]
-        freq = f"{row['freq [GHz]']}GHz"
+        image_label = row.get("image_label")
+        if pd.notna(image_label):
+            freq = f"{row['freq [GHz]']}GHz_{image_label}"
+        else:
+            freq = f"{row['freq [GHz]']}GHz"
         band = row["band"]
         cell_size = row["cell size [arcsec/pixel]"]
     
@@ -379,12 +388,47 @@ def filter_image_options(df_store, selected_images):
     selected_keys = {
         (option["band"], option["split"], round(float(option["frequency_ghz"]), 2))
         for option in selected_images
+        if not option.get("manual")
     }
     mask = [
         (row["band"], row["split"], round(float(row["freq [GHz]"]), 2)) in selected_keys
         for _, row in df_store.iterrows()
     ]
     filtered = df_store.loc[mask].reset_index(drop=True)
+    manual_options = [option for option in selected_images if option.get("manual")]
+    manual_rows = []
+    for index, option in enumerate(manual_options, start=1):
+        band_rows = df_store[df_store["band"] == option["band"]]
+        if band_rows.empty:
+            raise ValueError(
+                f"Manual image group {index} uses band {option['band']}, which is not available."
+            )
+
+        available_spws = set()
+        for row_spws in band_rows["spws"]:
+            available_spws.update(int(spw_id) for spw_id in str(row_spws).split(",") if spw_id)
+        selected_spws = {
+            int(spw_id) for spw_id in str(option["spws"]).split(",") if spw_id
+        }
+        missing_spws = selected_spws - available_spws
+        if not selected_spws or missing_spws:
+            raise ValueError(
+                f"Manual image group {index} contains SPWs unavailable for target imaging: "
+                f"{sorted(missing_spws or selected_spws)}."
+            )
+
+        row = band_rows.iloc[0].copy()
+        row["split"] = option["split"]
+        row["freq [GHz]"] = round(float(option["frequency_ghz"]), 2)
+        row["spws"] = ",".join(str(spw_id) for spw_id in sorted(selected_spws))
+        row["image_label"] = option["split"]
+        manual_rows.append(row)
+
+    if manual_rows:
+        filtered = pd.concat(
+            [filtered, pd.DataFrame(manual_rows)],
+            ignore_index=True,
+        )
     if filtered.empty:
         raise ValueError(
             "None of the selected bands/frequency groups are present in the Measurement Set listobs metadata."
